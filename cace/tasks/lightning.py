@@ -14,6 +14,7 @@ from ..tools import Metrics
 from typing import Dict, Optional, List, Tuple
 try:
     from lightning.pytorch.callbacks import LearningRateMonitor
+    from lightning.pytorch.loggers import TensorBoardLogger
 except ModuleNotFoundError as e:
     raise ModuleNotFoundError(
         "Missing dependency: 'lightning'. "

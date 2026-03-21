@@ -303,6 +303,8 @@ class Cace(nn.Module):
             "batch": batch_now,
             "node_feats": node_feats_out,
             "node_feats_l": l_feats_out,
+            "atomic_numbers": data["atomic_numbers"],
+            "e_ext":data["e_ext"],
             }
 
         if hasattr(self, "forward_features") and len(self.forward_features) > 0:
