@@ -19,7 +19,7 @@ except ModuleNotFoundError as e:
         "Missing dependency: 'lightning'. "
     ) from e
 
-__all__ = ["LightningModel","LightningTrainingTask","LightningData"]
+__all__ = ["LightningModel","LightningTrainingTask"]
 
 DEVICE_COUNT = torch.cuda.device_count()
 
@@ -167,6 +167,8 @@ class LightningModel(L.LightningModule):
         else:
             raise ValueError("Datamodule is not available during setup.")
 
+from lightning.pytorch.callbacks import Callback
+from datetime import datetime
 class TextCallback(Callback):
     """PyTorch Lightning metric callback."""
 
@@ -338,63 +340,66 @@ class LightningTrainingTask():
         print("Loading successful!")
 
 #Data
+# from ..tools import torch_geometric
+# from ..data import AtomicData
+# from . import get_dataset_from_xyz, load_data_loader
 
-class LightningData(L.LightningDataModule):
-    def __init__(self, root,
-                 cutoff=5.5,
-                 batch_size=4,
-                 data_key = {"energy":"energy","force":"force"},
-                 atomic_energies=None,
-                 valid_p=0.1,
-                 seed=1,
-                ):
-        super().__init__()
-        self.batch_size = batch_size
-        self.root = root
-        self.valid_p = valid_p
-        self.cutoff = cutoff
-        self.seed = seed
-        self.atomic_energies = atomic_energies
-        self.data_key = data_key
-        self.prepare_data()
+# class LightningData(L.LightningDataModule):
+#     def __init__(self, root,
+#                  cutoff=5.5,
+#                  batch_size=4,
+#                  data_key = {"energy":"energy","force":"force"},
+#                  atomic_energies=None,
+#                  valid_p=0.1,
+#                  seed=1,
+#                 ):
+#         super().__init__()
+#         self.batch_size = batch_size
+#         self.root = root
+#         self.valid_p = valid_p
+#         self.cutoff = cutoff
+#         self.seed = seed
+#         self.atomic_energies = atomic_energies
+#         self.data_key = data_key
+#         self.prepare_data()
 
-    def prepare_data(self):
-        collection = get_dataset_from_xyz(train_path=self.root,
-                                          valid_fraction=self.valid_p,
-                                          seed=self.seed,
-                                          cutoff=self.cutoff,
-                                          data_key=self.data_key,
-                                          atomic_energies = self.atomic_energies
-                                         )
+#     def prepare_data(self):
+#         collection = get_dataset_from_xyz(train_path=self.root,
+#                                           valid_fraction=self.valid_p,
+#                                           seed=self.seed,
+#                                           cutoff=self.cutoff,
+#                                           data_key=self.data_key,
+#                                           atomic_energies = self.atomic_energies
+#                                          )
 
-        self.train_dataset = [
-                AtomicData.from_atoms(atoms, cutoff=self.cutoff, data_key=self.data_key, atomic_energies=self.atomic_energies)
-                for atoms in collection.train
-            ]
+#         self.train_dataset = [
+#                 AtomicData.from_atoms(atoms, cutoff=self.cutoff, data_key=self.data_key, atomic_energies=self.atomic_energies)
+#                 for atoms in collection.train
+#             ]
 
-        self.valid_dataset = [
-                AtomicData.from_atoms(atoms, cutoff=self.cutoff, data_key=self.data_key, atomic_energies=self.atomic_energies)
-                for atoms in collection.valid
-            ]
+#         self.valid_dataset = [
+#                 AtomicData.from_atoms(atoms, cutoff=self.cutoff, data_key=self.data_key, atomic_energies=self.atomic_energies)
+#                 for atoms in collection.valid
+#             ]
 
-        self.train_loader = torch_geometric.DataLoader(
-            dataset = self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            drop_last=True,
-            num_workers=os.cpu_count()-1,
-        )
+#         self.train_loader = torch_geometric.DataLoader(
+#             dataset = self.train_dataset,
+#             batch_size=self.batch_size,
+#             shuffle=True,
+#             drop_last=True,
+#             num_workers=os.cpu_count()-1,
+#         )
 
-        self.valid_loader = torch_geometric.DataLoader(
-            dataset = self.valid_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            drop_last=False,
-            num_workers=os.cpu_count()-1,
-        )
+#         self.valid_loader = torch_geometric.DataLoader(
+#             dataset = self.valid_dataset,
+#             batch_size=self.batch_size,
+#             shuffle=False,
+#             drop_last=False,
+#             num_workers=os.cpu_count()-1,
+#         )
 
-    def train_dataloader(self):
-        return self.train_loader
+#     def train_dataloader(self):
+#         return self.train_loader
 
-    def val_dataloader(self):
-        return self.valid_loader
+#     def val_dataloader(self):
+#         return self.valid_loader
