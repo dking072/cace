@@ -6,8 +6,8 @@ from cace.tasks import LightningTrainingTask
 logs_name = "cace_water_lr"
 cutoff = 4.0
 batch_size = 4
-from dispnet.data.xyzdata import XYZData
-data = XYZData("../../../data/mace_water.xyz", batch_size=batch_size, cutoff=cutoff)
+from cace.data.xyzdata import XYZData
+data = XYZData("data/mace_water.xyz", batch_size=batch_size, cutoff=cutoff)
 
 from cace.representations import Cace
 from cace.modules import BesselRBF, GaussianRBF, GaussianRBFCentered
@@ -128,9 +128,9 @@ if 'SLURM_JOB_CPUS_PER_NODE' in os.environ.keys():
     on_cluster = True
 if on_cluster:
     progress_bar = False
-task = LightningTrainingTask(model,losses=losses,metrics=metrics,save_pkl=False,
+task = LightningTrainingTask(model,losses=losses,metrics=metrics,save_pkl=True,
                              logs_directory="lightning_logs",name=logs_name,
                              scheduler_args={'mode': 'min', 'factor': 0.8, 'patience': 10},
                              optimizer_args={'lr': 0.001},
                             )
-task.fit(data,dev_run=dev_run,max_epochs=1000,chkpt=chkpt,progress_bar=progress_bar)
+task.fit(data,dev_run=dev_run,max_epochs=1,chkpt=chkpt,progress_bar=progress_bar)
