@@ -13,7 +13,7 @@ root_xyz = "/home/king1305/Apps/les_fit/data-benchmark/train-H2O_RPBE-D3.xyz"
 if on_cluster:
     root_xyz = "/global/scratch/users/king1305/data/train-H2O_RPBE-D3.xyz"
 #5% val, as we have test data
-data = XYZData("/home/king1305/Apps/les_fit/data-benchmark/train-H2O_RPBE-D3.xyz", batch_size=batch_size, cutoff=cutoff, test_p=0)
+data = XYZData(root_xyz, batch_size=batch_size, cutoff=cutoff, test_p=0)
 
 latent_u = True
 induced_q = True
