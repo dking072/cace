@@ -3,11 +3,29 @@ import glob
 import torch
 from cace.tasks import LightningTrainingTask
 
-logs_name = "cace_water_lr"
-cutoff = 4.0
-batch_size = 4
+cutoff = 5.5
+batch_size = 2
 from cace.data.xyzdata import XYZData
-data = XYZData("data/mace_water.xyz", batch_size=batch_size, cutoff=cutoff)
+on_cluster = False
+if 'SLURM_JOB_CPUS_PER_NODE' in os.environ.keys():
+    on_cluster = True
+root_xyz = "/home/king1305/Apps/les_fit/data-benchmark/train-H2O_RPBE-D3.xyz"
+if on_cluster:
+    root_xyz = "/global/scratch/users/king1305/data/train-H2O_RPBE-D3.xyz"
+#5% val, as we have test data
+data = XYZData("/home/king1305/Apps/les_fit/data-benchmark/train-H2O_RPBE-D3.xyz", batch_size=batch_size, cutoff=cutoff, test_p=0)
+
+latent_u = True
+induced_q = True
+induced_u = False
+tag = ""
+if latent_u:
+    tag += "_u"
+if induced_q:
+    tag += "_iq"
+if induced_u:
+    tag += "_iu"
+logs_name = f"caceles{tag}"
 
 from cace.representations import Cace
 from cace.modules import BesselRBF, GaussianRBF, GaussianRBFCentered
@@ -19,13 +37,13 @@ cutoff_fn = PolynomialCutoff(cutoff=cutoff)
 
 representation = Cace(
     zs=[1,8],
-    n_atom_basis=4,
+    n_atom_basis=3,
     embed_receiver_nodes=True,
     cutoff=cutoff,
     cutoff_fn=cutoff_fn,
     radial_basis=radial_basis,
     n_radial_basis=12,
-    max_l=2,
+    max_l=3,
     max_l_out=2,
     max_nu=3,
     num_message_passing=1,
@@ -47,7 +65,11 @@ atomwise = Atomwise(n_layers=3,
 
 les_polar = LesPolarWrapper(
     feature_key='node_feats_l',
-    compute_dipole=True,
+    compute_dipole = False,
+    compute_polarizability = False,
+    induced_q=induced_q,
+    induced_u=induced_u,
+    latent_u=latent_u,
     compute_bec=False,
 )
 
@@ -122,15 +144,10 @@ if chkpt:
     print("Restarting...")
     dev_run = False
 
-progress_bar = True
-on_cluster = False
-if 'SLURM_JOB_CPUS_PER_NODE' in os.environ.keys():
-    on_cluster = True
-if on_cluster:
-    progress_bar = False
+progress_bar = True if not on_cluster else False
 task = LightningTrainingTask(model,losses=losses,metrics=metrics,save_pkl=True,
                              logs_directory="lightning_logs",name=logs_name,
                              scheduler_args={'mode': 'min', 'factor': 0.8, 'patience': 10},
                              optimizer_args={'lr': 0.001},
                             )
-task.fit(data,dev_run=dev_run,max_epochs=1,chkpt=chkpt,progress_bar=progress_bar)
+task.fit(data,dev_run=dev_run,max_epochs=1000,chkpt=chkpt,progress_bar=progress_bar)
