@@ -139,10 +139,7 @@ class LesPolarWrapper(nn.Module):
             raise ValueError(f"Feature key {self.feature_key} not found in data dictionary.")
         features = data[self.feature_key] #{0: l=0, 1:l=1, 2:l=2...}
 
-        if data[self.e_ext_key] is not None:
-            e_ext = data[self.e_ext_key]
-        else:
-            e_ext = torch.zeros_like(data["positions"][0])
+        e_ext = torch.zeros_like(data["positions"][0])
         e_ext.requires_grad = True
         assert(data["positions"].requires_grad)
         data["cell"] = data["cell"].reshape(-1,3,3)
