@@ -40,7 +40,7 @@ def calc_E_ext(r_raw,q,e_ext,cell=None,u=None,kappa=None,alpha=None):
 
     E_ext = -(e_ext * mu).sum()
     E_ext_u = -(e_ext * mu_u).sum()
-    return E_ext, mu, polarizability.real, phase, E_ext_u
+    return E_ext, mu, mu_u, polarizability.real, phase, E_ext_u
 
 def dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=None,latent_dipoles=None):
     n_out = E_ext.shape[0]
@@ -108,7 +108,7 @@ def polarizability_from_e_ext_deriv(dipole,e_ext):
         is_grads_batched=True,
     )[0]
 
-    #We'd take real, so just ignore I guess..
+    #We'd take real, so just ignore imaginary:
     # if dipole_flat.is_complex():
     #     # d(Im dipole)/d e_ext
     #     polarizability_imag_flat = torch.autograd.grad(
@@ -132,68 +132,3 @@ def polarizability_from_e_ext_deriv(dipole,e_ext):
     return polarizability
         
     
-
-
-
-
-
-
-
-
-
-
-
-
-
-        #     if self.via_energy_derivatives:
-        #         #Can't batch non-periodic with periodic
-        #         n_out = E_ext.shape[0]
-        #         eye = torch.eye(n_out, device=E_ext.device, dtype=e_ext.dtype)
-
-        #         dipole_real = -torch.autograd.grad(
-        #             outputs=E_ext.real,
-        #             inputs=e_ext,
-        #             grad_outputs=eye,
-        #             retain_graph=True,
-        #             create_graph=True,
-        #             allow_unused=False,
-        #             is_grads_batched=True,
-        #         )[0]  # [n_out, 3]
-
-        #         if torch.is_complex(E_ext):
-        #             dipole_imag = -torch.autograd.grad(
-        #                 outputs=E_ext.imag,
-        #                 inputs=e_ext,
-        #                 grad_outputs=eye,
-        #                 retain_graph=True,
-        #                 create_graph=True,
-        #                 allow_unused=False,
-        #                 is_grads_batched=True,
-        #             )[0]  # [n_out, 3]
-        #             dipole = dipole_real + 1j * dipole_imag
-        #         else:
-        #             dipole = dipole_real
-
-        #         if periodic:
-        #             dipole_u = -torch.autograd.grad(
-        #                 outputs=E_ext_u,
-        #                 inputs=e_ext,
-        #                 grad_outputs=eye,
-        #                 retain_graph=True,
-        #                 create_graph=True,
-        #                 allow_unused=False,
-        #                 is_grads_batched=True,
-        #             )[0]  # [n_out, 3]
-        #     else:
-        #         dipole = mu
-        # else:
-        #     dipole = None
-
-
-
-
-    # if not via_deriv:
-    #     r_kappa = (r_raw * kappa[:,None]).sum(dim=0)/kappa.sum()
-    #     r_adj = r - r_kappa[None,:]
-    #     polarizability = (kappa[:,None,None] * r_adj[:,:,None] * r_adj[:,None,:]).sum(dim=0)
-    # else:

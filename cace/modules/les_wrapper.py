@@ -135,12 +135,9 @@ class LesPolarWrapper(nn.Module):
     def forward(self, data: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
 
         # reshape the feature vectors
-        if isinstance(self.feature_key, str):
-            if self.feature_key not in data:
-                raise ValueError(f"Feature key {self.feature_key} not found in data dictionary.")
-            features = data[self.feature_key] #{0: l=0, 1:l=1, 2:l=2...}
-        elif isinstance(self.feature_key, list):
-            features = torch.cat([data[key].reshape(data[key].shape[0], -1) for key in self.feature_key], dim=-1)
+        if self.feature_key not in data:
+            raise ValueError(f"Feature key {self.feature_key} not found in data dictionary.")
+        features = data[self.feature_key] #{0: l=0, 1:l=1, 2:l=2...}
 
         if data[self.e_ext_key] is not None:
             e_ext = data[self.e_ext_key]
@@ -187,6 +184,7 @@ class LesPolarWrapper(nn.Module):
             unique_batches = torch.unique(data["batch"])
             E_ext_list = []
             mu_list = []
+            mu_u_list = []
             alpha_list = []
             phase_list = []
             E_ext_u_list = []
@@ -199,15 +197,17 @@ class LesPolarWrapper(nn.Module):
                 u_now = data["latent_dipoles"][mask].squeeze() if (self.latent_u or self.induced_u) else None
                 kappa_now = latent_kappas[mask].squeeze() if self.induced_q else None
                 a_now = latent_alphas[mask].squeeze() if self.induced_u else None
-                E_ext, mu, alpha, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now,alpha=a_now,kappa=kappa_now)
+                E_ext, mu, mu_u, alpha, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now,alpha=a_now,kappa=kappa_now)
                 phase_list.append(phase)
                 E_ext_list.append(E_ext)
                 E_ext_u_list.append(E_ext_u)
                 mu_list.append(mu)
+                mu_u_list.append(mu_u)
                 alpha_list.append(alpha)
             E_ext = torch.hstack(E_ext_list)
             E_ext_u = torch.hstack(E_ext_u_list)
             mu = torch.vstack(mu_list)
+            mu_u = torch.vstack(mu_u_list)
             alpha = torch.stack(alpha_list)
             phases = torch.vstack(phase_list)
 
@@ -215,7 +215,7 @@ class LesPolarWrapper(nn.Module):
                 from .pol_tools import dipole_from_e_ext_deriv
                 dipole, dipole_u = dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=E_ext_u,latent_dipoles=data["latent_dipoles"])
             else:
-                dipole = mu
+                dipole, dipole_u = mu, mu_u
         else:
             dipole = torch.zeros_like(data["positions"][0])
 
@@ -242,13 +242,10 @@ class LesPolarWrapper(nn.Module):
         if self.compute_polarizability:
             if self.via_energy_derivatives:
                 from .pol_tools import polarizability_from_e_ext_deriv
-                polarizability = polarizability_from_e_ext_deriv(dipole,e_ext)
+                dipole_tot = (dipole + dipole_u) if dipole_u is not None else dipole
+                polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
                 if polarizability is None:
                     polarizability = torch.zeros_like(data["cell"])
-                if dipole_u is not None:
-                    polarizability_u = polarizability_from_e_ext_deriv(dipole_u,e_ext)
-                    if polarizability_u is not None:
-                        polarizability = polarizability + polarizability_u
             else:
                 polarizability = alpha
         else:
