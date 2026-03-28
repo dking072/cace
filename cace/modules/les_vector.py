@@ -5,7 +5,9 @@ from typing import Dict, Sequence, Union
 from cace.modules.tensornet import TensorFeedForward
 from les.util import grad
 from les.module import FixedCharges
+
 from ..tools import scatter_sum
+from cace.modules.tensornet_utils import decompose_tensor
 
 class LesVectorWrapper(nn.Module):
     def __init__(self,
@@ -17,7 +19,9 @@ class LesVectorWrapper(nn.Module):
                  compute_dipole: bool = True,
                  compute_polarizability: bool = True,
                  compute_bec: bool = False,
-                 via_energy_derivatives: bool = False,
+                 via_energy_derivatives: bool = True,
+                 fukui : bool = True,
+                 g_term: bool = False,
                  induced_q: bool = False,
                  induced_u: bool = True,
                  latent_u: bool = True,
@@ -30,10 +34,13 @@ class LesVectorWrapper(nn.Module):
         self.feature_key = feature_key
         self.e_ext_key = e_ext_key
         self.atomic_numbers_key = atomic_numbers_key
-        self.induced_q = induced_q
         self.induced_u = induced_u
         self.latent_u = latent_u
+
+        self.fukui = fukui
+        self.g_term = g_term
         self.n_scf = n_scf
+        self.induced_q = induced_q
 
         self.epsilon_factor = epsilon_factor
         self.normalization_factor = epsilon_factor ** 0.5
@@ -48,20 +55,20 @@ class LesVectorWrapper(nn.Module):
             self.compute_dipole = True
         if self. compute_polarizability:
             self.compute_dipole = True
+        self.required_derivatives = []
         self.model_outputs = ["LES_energy"]
         if self.compute_dipole:
             self.model_outputs.append("LES_dipole")
         if self.compute_bec:
             self.model_outputs.append("LES_BEC")
+            self.required_derivatives.append('positions')
         if self.compute_polarizability:
             self.model_outputs.append("LES_polarizability")
-        self.required_derivatives = []
-        self.required_derivatives.append('cell')
 
         #0: q, g0, fukui
         #1: u, kappa
         #2: g1, alpha
-        self.tensor_feed_forward = TensorFeedForward(n_scf+4,lomax=2)
+        self.tensor_feed_forward = TensorFeedForward(3*n_scf+7,lomax=2)
         # self.g_readout = nn.Sequential(
         #     nn.LazyLinear(out_features=32),
         #     nn.ReLU(),
@@ -74,6 +81,8 @@ class LesVectorWrapper(nn.Module):
 
         e_lr_results = []
         field_results = []
+        phi_results = []
+        phir_results = []
         for i in unique_batches.long():
             mask = batch == i  # Create a mask for the i-th configuration
             # Calculate the potential energy for the i-th configuration
@@ -88,19 +97,30 @@ class LesVectorWrapper(nn.Module):
                 result = self.les.ewald.compute_potential_realspace(r_raw=r_raw_now, q=q_now, u=u_now, 
                                                           compute_field=True
                                                           )
+                r_raw_now = r_raw_now - r_raw_now.mean(dim=0)[None,:]
+                phir_results.append(r_raw_now)
             else:
                 # the box is periodic, we use the reciprocal sum
                 result = self.les.ewald.compute_potential_triclinic(r_raw=r_raw_now, q=q_now, 
                                                           cell_now=box_now, u=u_now, 
                                                           compute_field=True
                                                           )
+                r_frac = torch.matmul(r_raw_now, torch.linalg.inv(box_now)) #[N,3]
+                phase = torch.exp(1j * 2.* torch.pi * r_frac) #[N,3]
+                r_raw_now = torch.matmul(phase, box_now / (1j * 2.* torch.pi))
+                phir_results.append(r_raw_now)
+
             e_lr_results.append(result["pot"])
-            field_results.append(result["field"])
+            field_results.append(result["field"].squeeze())
+            phi_results.append(result["phi"].squeeze())
+
         e_lr = torch.hstack(e_lr_results)
         field = torch.vstack(field_results)
-        return e_lr, field
+        phi = torch.hstack(phi_results)
+        phir = torch.vstack(phir_results)
+        return e_lr, field, phi, phir
 
-    def forward(self, data: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, data: Dict[str, torch.Tensor], training=False, **kwargs) -> Dict[str, torch.Tensor]:
 
         # reshape the feature vectors
         if isinstance(self.feature_key, str):
@@ -118,39 +138,62 @@ class LesVectorWrapper(nn.Module):
         #Compute chi, alpha
         out = self.tensor_feed_forward(features)
         latent_charges = out[0][:,0] #[N,1]
-        latent_g0 = out[0][:,1] if self.induced_q else None #[N,1]
-        latent_fukui = out[0][:,2:] #[N,n_scf+]
+        latent_g0 = out[0][:,1] if (self.induced_q and self.g_term) else None #[N,1]
+        latent_g1_trace = out[0][:,2] if (self.induced_u and self.g_term) else None 
+        latent_fukui = out[0][:,3:self.n_scf+5] if self.fukui else None #[N,n_scf+1]
+        latent_kappas = out[0][:,self.n_scf+5:2*self.n_scf+6] if self.induced_q else None #[N,n_scf+]
+        latent_alpha_trace = out[0][:,2*self.n_scf+6:3*self.n_scf+7] if self.induced_u else None
         latent_dipoles = out[1][:,0] if self.latent_u else None #[N,3]
-        latent_kappas = out[1][:,2:] if self.induced_q else None #[N,n_scf+,3]
-        latent_g1 = out[2][:,0] if self.induced_u else None #[N,3,3]
-        latent_alphas = out[2][:,1:] if self.induced_u else None #[N,n_scf+,3,3]
+        latent_g1 = out[2][:,0] if (self.induced_u and self.g_term) else None #[N,3,3]
+        latent_alphas = out[2][:,1:self.n_scf+2] if self.induced_u else None #[N,n_scf+,3,3]
 
         #Atomic charges:
         atomic_numbers = data[self.atomic_numbers_key]
         latent_charges = latent_charges + self.fixed_charges(atomic_numbers)
 
         #Neutralize charges:
-        fukui_now = latent_fukui[:,0]
-        latent_charges = latent_charges - fukui_now/fukui_now.sum() * latent_charges.sum()
+        if self.fukui:
+            fukui_now = latent_fukui[:,0]
+            latent_charges = latent_charges - fukui_now/fukui_now.sum() * latent_charges.sum()
+        else:
+            latent_charges = latent_charges - latent_charges.mean()
 
         #Enforce PSD via AA^T
         latent_g0 = latent_g0**2 if self.induced_q else None
-        latent_alphas = torch.einsum("ncij,nckj->ncik",latent_alphas,latent_alphas) if self.induced_u else None
-        latent_g1 = torch.einsum("nij,nkj->nik",latent_g1,latent_g1) if self.induced_u else None
+        latent_alpha_trace = latent_alpha_trace**2 if self.induced_u else None
+        latent_g1_trace = latent_g1_trace**2 if (self.induced_u and self.g_term) else None
+        eye = torch.eye(3,device=latent_charges.device)
+        # ones_nscf = torch.ones(latent_charges.shape[0],self.n_scf+1,device=latent_charges.device)
+        # eye_nscf = ones_nscf[:,:,None,None] * eye[None,None,:,:]
+        # eye_one = torch.ones_like(latent_charges)[:,None,None] * eye[None,:,:]
+        if self.induced_u:
+            _ , _, latent_alphas = decompose_tensor(latent_alphas)
+            # latent_alphas = torch.einsum("ncij,nckj->ncik",latent_alphas,latent_alphas) if self.induced_u else None
+            latent_alphas = latent_alphas + eye[None,None,:,:] * latent_alpha_trace[:,:,None,None]
+        if (self.induced_u and self.g_term):
+            _, _, latent_g1 = decompose_tensor(latent_g1)
+            # latent_g1 = torch.einsum("nij,nkj->nik",latent_g1,latent_g1) if self.induced_u else None
+            latent_g1 = latent_g1 + eye[None,:,:] * latent_g1_trace[:,None,None]
 
         #Do SCF
         q_induced_tot, u_induced_tot = 0, 0
         for i in range(self.n_scf+1):
             #Calc e_lr and field
-            e_lr, field = self.compute_ewald(data["positions"],latent_charges,batch=data["batch"],cell=data["cell"],u=latent_dipoles)
+            e_lr, field, phi, phir = self.compute_ewald(data["positions"],latent_charges,batch=data["batch"],cell=data["cell"],u=latent_dipoles)
             field = field.squeeze() + e_ext[None,:]
 
             #Induced q
             if self.induced_q:
-                fukui_now = latent_fukui[:,i+1]
-                kappas_now = latent_kappas[:,i,:]
-                q_induced_now = torch.einsum("ni,ni->n",kappas_now,field)
-                q_induced_now = q_induced_now - fukui_now/fukui_now.sum() * q_induced_now.sum()
+                phi = phi + (phir * e_ext[None,:]).sum(dim=1).real
+
+                kappas_now = latent_kappas[:,i]
+                q_induced_now = (kappas_now * phi).sum()
+                # q_induced_now = torch.einsum("ni,ni->n",kappas_now,field)
+                if self.fukui:
+                    fukui_now = latent_fukui[:,i+1]
+                    q_induced_now = q_induced_now - fukui_now/fukui_now.sum() * q_induced_now.sum()
+                else:
+                    q_induced_now = q_induced_now - q_induced_now.mean()
                 latent_charges = latent_charges + q_induced_now
                 q_induced_tot = q_induced_tot + q_induced_now
 
@@ -166,29 +209,30 @@ class LesVectorWrapper(nn.Module):
 
         #Calculate final energy:
         if self.induced_q or self.induced_u:
-            e_lr, field = self.compute_ewald(data["positions"],latent_charges,data["batch"],u=latent_dipoles,cell=data["cell"])
+            e_lr, field, phi, phir = self.compute_ewald(data["positions"],latent_charges,data["batch"],u=latent_dipoles,cell=data["cell"])
 
         #Calculate self-energies
-        e_g = torch.zeros_like(latent_charges)
-        if self.induced_q:
-            e_g = e_g + (q_induced_tot * latent_g0)
-        if self.induced_u:
-            g1 = torch.einsum("nij,nj->ni",latent_g1,u_induced_tot)
-            g1 = torch.einsum("ni,ni->n",u_induced_tot,g1)
-            e_g = e_g + g1
-        e_g = scatter_sum(
-            src=e_g,
-            index=data["batch"],
-            dim=0,
-            dim_size=data["batch"].max().item() + 1  # Ensures correct batch sizing
-        )
-        e_lr = e_lr + e_g
+        if self.g_term:
+            e_g = torch.zeros_like(latent_charges)
+            if self.induced_q:
+                e_g = e_g + (q_induced_tot * latent_g0)
+            if self.induced_u:
+                g1 = torch.einsum("nij,nj->ni",latent_g1,u_induced_tot)
+                g1 = torch.einsum("ni,ni->n",u_induced_tot,g1)
+                e_g = e_g + g1
+            e_g = scatter_sum(
+                src=e_g,
+                index=data["batch"],
+                dim=0,
+                dim_size=data["batch"].max().item() + 1  # Ensures correct batch sizing
+            )
+            e_lr = e_lr + e_g
 
         #Latent charges/dipoles include induced
         data["latent_charges"] = latent_charges
         data["latent_dipoles"] = latent_dipoles
 
-        if self.compute_dipole:
+        if self.compute_dipole and not training:
             from .pol_tools import calc_E_ext
             unique_batches = torch.unique(data["batch"])
             E_ext_list = []
@@ -223,7 +267,7 @@ class LesVectorWrapper(nn.Module):
         else:
             dipole = torch.zeros_like(data["positions"][0])
 
-        if self.compute_bec:
+        if self.compute_bec and not training:
             if self.via_energy_derivatives:
                 # print("Dipole:",dipole)
                 bec = grad(y=dipole,x=data["positions"]).transpose(1,2).contiguous()
@@ -243,7 +287,7 @@ class LesVectorWrapper(nn.Module):
                 if data["latent_dipoles"] is not None:
                     bec = bec.sum(dim=1)
                     
-        if self.compute_polarizability:
+        if self.compute_polarizability and not training:
             from .pol_tools import polarizability_from_e_ext_deriv
             dipole_tot = (dipole + dipole_u) if dipole_u is not None else dipole
             polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
@@ -254,7 +298,7 @@ class LesVectorWrapper(nn.Module):
 
         if self.compute_energy:
             data["LES_energy"] = e_lr
-        if self.compute_bec:
+        if self.compute_bec and not training:
             data["LES_BEC"] = bec
         data["LES_dipole"] = dipole
         data["LES_polarizability"] = polarizability

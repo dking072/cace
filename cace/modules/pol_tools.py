@@ -102,7 +102,7 @@ def polarizability_from_e_ext_deriv(dipole,e_ext):
         outputs=dipole_flat.real,
         inputs=e_ext,
         grad_outputs=grad_outputs,
-        retain_graph=dipole_flat.is_complex(),  # keep graph if we still need imag pass
+        retain_graph=True,  # keep graph if we still need imag pass
         create_graph=False,
         allow_unused=True,
         is_grads_batched=True,
