@@ -16,8 +16,8 @@ def calc_E_ext(r_raw,q,e_ext,cell=None,u=None,kappa=None,alpha=None):
     mu_u = torch.zeros_like(e_ext)
     if u is not None:
         mu_u = mu_u + u.sum(dim=0)
-        if cell is None:
-            mu = mu + u.sum(dim=0)
+        # if cell is None:
+        #     mu = mu + u.sum(dim=0)
         
     polarizability = 0 * torch.eye(3,device=r_raw.device)
     if kappa is not None:
@@ -27,20 +27,21 @@ def calc_E_ext(r_raw,q,e_ext,cell=None,u=None,kappa=None,alpha=None):
         dip_induced = (r_raw * q_ext_induced[:,None]).sum(dim=0)
         mu = mu + dip_induced
         #Polarizability w/o derivative:
-        polarizability = (kappa[:,None,None] * r_raw[:,:,None] * r_raw[:,None,:]).sum(dim=0)
-        kappa_rij = kappa[:,None,None,None] * r_raw[:,None,:,None] * r_raw[None,:,None,:]
-        polarizability = polarizability - 1/r_raw.shape[0]*kappa_rij.sum(dim=0).sum(dim=0)
+        # polarizability = (kappa[:,None,None] * r_raw[:,:,None] * r_raw[:,None,:]).sum(dim=0)
+        # kappa_rij = kappa[:,None,None,None] * r_raw[:,None,:,None] * r_raw[None,:,None,:]
+        # polarizability = polarizability - 1/r_raw.shape[0]*kappa_rij.sum(dim=0).sum(dim=0)
+        #polarizability.real,
 
     if alpha is not None:
-        polarizability = polarizability + torch.eye(3,device=r_raw.device) * alpha.sum()
+        # polarizability = polarizability + torch.eye(3,device=r_raw.device) * alpha.sum()
         u_ext_induced = e_ext[None,:] * alpha[:,None]
         mu_u = mu_u + u_ext_induced.sum(dim=0)
-        if cell is None:
-            mu = mu + u_ext_induced.sum(dim=0)
+        # if cell is None:
+        #     mu = mu + u_ext_induced.sum(dim=0)
 
     E_ext = -(e_ext * mu).sum()
     E_ext_u = -(e_ext * mu_u).sum()
-    return E_ext, mu, mu_u, polarizability.real, phase, E_ext_u
+    return E_ext, mu, mu_u, phase, E_ext_u
 
 def dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=None,latent_dipoles=None):
     n_out = E_ext.shape[0]
@@ -68,21 +69,17 @@ def dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=None,latent_dipoles=None):
         )[0]  # [n_out, 3]
         dipole = dipole + 1j * dipole_imag
 
-        if latent_dipoles is not None:
-            dipole_u = -torch.autograd.grad(
-                outputs=E_ext_u,
-                inputs=e_ext,
-                grad_outputs=eye,
-                retain_graph=True,
-                create_graph=True,
-                allow_unused=False,
-                is_grads_batched=True,
-            )[0]  # [n_out, 3]
-        else:
-            dipole_u = None
-    else:
-        dipole_u = None
+    dipole_u = -torch.autograd.grad(
+        outputs=E_ext_u,
+        inputs=e_ext,
+        grad_outputs=eye,
+        retain_graph=True,
+        create_graph=True,
+        allow_unused=False,
+        is_grads_batched=True,
+    )[0]  # [n_out, 3]
 
+    #dipole_q, dipole_u
     return dipole, dipole_u
 
 def polarizability_from_e_ext_deriv(dipole,e_ext):
