@@ -119,19 +119,22 @@ class LesWrapper(nn.Module):
         return data
 
 from cace.modules.tensornet import TensorFeedForward
+from .pol_tools import dipole_from_e_ext_deriv
+from .pol_tools import polarizability_from_e_ext_deriv
+from ..tools import scatter_sum
 from les.util import grad
 
 class LesPolarWrapper(nn.Module):
     def __init__(self,
                  feature_key: Union[str, Sequence[int]] = 'node_feats_l',
                  n_scf = 0,
-                 separate_alpha = False, #Separate alpha for each nscf
-                 bias_alpha = False,
+                 channel_alpha = False, #Separate alpha for each nscf
+                 bias_alpha = True,
                  compute_energy: bool = True,
                  compute_dipole: bool = True,
                  compute_polarizability: bool = True,
                  compute_bec: bool = False,
-                 via_energy_derivatives: bool = False,
+                 via_energy_derivatives: bool = True,
                  induced_q: bool = False,
                  induced_u: bool = True,
                  latent_u: bool = True,
@@ -142,10 +145,13 @@ class LesPolarWrapper(nn.Module):
         self.les = Les()
 
         self.feature_key = feature_key
-        self.e_ext_key = e_ext_key
         self.induced_q = induced_q
         self.induced_u = induced_u
         self.latent_u = latent_u
+        self.channel_alpha = channel_alpha
+        self.bias_alpha = bias_alpha
+        self.e_ext_key = "e_ext"
+        self.n_scf = n_scf
 
         self.epsilon_factor = epsilon_factor
         self.normalization_factor = epsilon_factor ** 0.5
@@ -170,8 +176,7 @@ class LesPolarWrapper(nn.Module):
         self.required_derivatives = []
         self.required_derivatives.append('cell')
 
-        self.tensor_feed_forward = TensorFeedForward(n_scf+2,lomax=2)
-        self.fixed_charges = FixedCharges()
+        self.tensor_feed_forward = TensorFeedForward(2*n_scf+3,lomax=2)
 
     def forward(self, data: Dict[str, torch.Tensor], training=False, **kwargs) -> Dict[str, torch.Tensor]:
 
@@ -180,10 +185,7 @@ class LesPolarWrapper(nn.Module):
             raise ValueError(f"Feature key {self.feature_key} not found in data dictionary.")
         features = data[self.feature_key] #{0: l=0, 1:l=1, 2:l=2...}
 
-        if data[self.e_ext_key] is not None:
-            e_ext = data[self.e_ext_key]
-        else:
-            e_ext = torch.zeros_like(data["positions"][0])
+        e_ext = torch.zeros_like(data["positions"][0])
         e_ext.requires_grad = True
         assert(data["positions"].requires_grad)
         data["cell"] = data["cell"].reshape(-1,3,3)
@@ -191,42 +193,46 @@ class LesPolarWrapper(nn.Module):
         #Compute chi, alpha
         out = self.tensor_feed_forward(features)
         latent_charges = out[0][:,0] #[N]
-        latent_kappas = out[0][:,1]**2 if self.induced_q else None #[N]
-        latent_alphas = out[0][:,2]**2 if self.induced_u else None #[N]
+        latent_alphas_bias = out[0][:,1:self.n_scf+2]**2 if self.induced_u else None
+        latent_kappas = out[0][:,self.n_scf+2:2*self.n_scf+3]**2 if self.induced_q else None #[N]
         latent_dipoles = out[1][:,0] if self.latent_u else None #[N,3]
+        latent_alphas = out[2][:,:self.n_scf+1] if self.induced_u else None #[N]
 
-        #Fixed charges
-        atomic_numbers = data[self.atomic_numbers_key]
-        latent_charges = latent_charges + self.fixed_charges(atomic_numbers)
+        if latent_alphas is not None:
+            latent_alphas = torch.einsum("ncij,nckj->ncik", latent_alphas, latent_alphas)
+            if self.bias_alpha:
+                eye = torch.eye(3,device=latent_charges.device)
+                latent_alphas = latent_alphas + latent_alphas_bias[:,:,None,None] * eye[None,None,:,:]
 
         #Ewald requires charge dummy index
-        result = self.les(
-            positions=data['positions'],
-            cell=data['cell'].view(-1, 3, 3),
-            latent_charges = latent_charges[:,None],
-            latent_dipoles = latent_dipoles[:,None,:] if self.latent_u else None,
-            latent_kappas = latent_kappas[:,None] if self.induced_q else None,
-            latent_alphas = latent_alphas[:,None] if self.induced_u else None,
-            atomic_numbers = None,
-            batch=data["batch"],
-            compute_energy=self.compute_energy,
-            compute_bec=False,
-        )
+        for i in range(self.n_scf+1):
+            result = self.les(
+                positions=data['positions'],
+                cell=data['cell'].view(-1, 3, 3),
+                latent_charges = latent_charges,
+                latent_dipoles = latent_dipoles if self.latent_u else None,
+                latent_kappas = latent_kappas[:,i,...] if self.induced_q else None,
+                latent_alphas = latent_alphas[:,i,...] if self.induced_u else None,
+                atomic_numbers = None,
+                batch=data["batch"],
+                e_ext=e_ext,
+                compute_energy=self.compute_energy,
+                compute_bec=False,
+            )
+            latent_charges = result["latent_charges"]
+            latent_dipoles = result["latent_dipoles"]
 
-        #Latent charges/dipoles include induced
-        # data["latent_kappas"] = latent_kappas
-        # data["latent_alphas"] = latent_alphas
         data["E_lr"] = result['E_lr']
-        data["latent_charges"] = result["latent_charges"] #Includes induced w/o e_ext
-        data["latent_dipoles"] = result["latent_dipoles"]
+        data["latent_charges"] = latent_charges
+        data["latent_dipoles"] = latent_dipoles
 
-        if self.compute_dipole:
+        if self.compute_dipole and not training:
             from .pol_tools import calc_E_ext
             unique_batches = torch.unique(data["batch"])
             E_ext_list = []
             mu_list = []
             mu_u_list = []
-            alpha_list = []
+            # alpha_list = []
             phase_list = []
             E_ext_u_list = []
             #Calculate coupling to external field
@@ -236,29 +242,31 @@ class LesPolarWrapper(nn.Module):
                 cell_now = data["cell"][i] if (torch.linalg.det(data["cell"][i]) > 0) else None 
                 q_now = data["latent_charges"][mask].squeeze()
                 u_now = data["latent_dipoles"][mask].squeeze() if (self.latent_u or self.induced_u) else None
-                kappa_now = latent_kappas[mask].squeeze() if self.induced_q else None
-                a_now = latent_alphas[mask].squeeze() if self.induced_u else None
-                E_ext, mu, mu_u, alpha, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now,alpha=a_now,kappa=kappa_now)
+                # kappa_now = latent_kappas[mask].squeeze() if self.induced_q else None
+                # a_now = latent_alphas[mask].squeeze() if self.induced_u else None
+                E_ext, mu, mu_u, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now)
                 phase_list.append(phase)
                 E_ext_list.append(E_ext)
                 E_ext_u_list.append(E_ext_u)
                 mu_list.append(mu)
                 mu_u_list.append(mu_u)
-                alpha_list.append(alpha)
+                # alpha_list.append(alpha)
             E_ext = torch.hstack(E_ext_list)
             E_ext_u = torch.hstack(E_ext_u_list)
             mu = torch.vstack(mu_list)
             mu_u = torch.vstack(mu_u_list)
-            alpha = torch.stack(alpha_list)
+            # alpha = torch.stack(alpha_list)
             phases = torch.vstack(phase_list)
 
             if self.via_energy_derivatives:
-                from .pol_tools import dipole_from_e_ext_deriv
+                #Extra backprop cuz of BEC :/
                 dipole, dipole_u = dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=E_ext_u,latent_dipoles=data["latent_dipoles"])
             else:
                 dipole, dipole_u = mu, mu_u
         else:
             dipole = torch.zeros_like(data["positions"][0])
+            dipole_u = torch.zeros_like(data["positions"][0])
+        dipole_tot = dipole + dipole_u
 
         if self.compute_bec:
             if self.via_energy_derivatives:
@@ -279,16 +287,20 @@ class LesPolarWrapper(nn.Module):
                     )
                 if data["latent_dipoles"] is not None:
                     bec = bec.sum(dim=1)
-                    
-        if self.compute_polarizability:
-            if self.via_energy_derivatives:
-                from .pol_tools import polarizability_from_e_ext_deriv
-                dipole_tot = (dipole + dipole_u) if dipole_u is not None else dipole
+
+        # print("sum alpha:",latent_alphas.sum(dim=(0,1)))
+        if (self.compute_polarizability and self.induced_u) and not training:
+            if not self.via_energy_derivatives and (self.n_scf == 0):
+                polarizability = scatter_sum(
+                    src=latent_alphas,
+                    index=data["batch"],
+                    dim=0,
+                    dim_size=data["batch"].max().item() + 1  # Ensures correct batch sizing
+                ).squeeze()
+            else:
                 polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
                 if polarizability is None:
                     polarizability = torch.zeros_like(data["cell"])
-            else:
-                polarizability = alpha
         else:
             polarizability = torch.zeros_like(data["cell"])
 
@@ -296,7 +308,7 @@ class LesPolarWrapper(nn.Module):
             data["LES_energy"] = result['E_lr']
         if self.compute_bec:
             data["LES_BEC"] = bec
-        data["LES_dipole"] = dipole
+        data["LES_dipole"] = dipole_tot
         data["LES_polarizability"] = polarizability
         return data
 
