@@ -120,13 +120,13 @@ class LesWrapper(nn.Module):
 
 from cace.modules.tensornet import TensorFeedForward
 from les.util import grad
-from les.module import FixedCharges
 
 class LesPolarWrapper(nn.Module):
     def __init__(self,
                  feature_key: Union[str, Sequence[int]] = 'node_feats_l',
-                 e_ext_key: str = 'e_ext', #External field
-                 atomic_numbers_key = "atomic_numbers",
+                 n_scf = 0,
+                 separate_alpha = False, #Separate alpha for each nscf
+                 bias_alpha = False,
                  compute_energy: bool = True,
                  compute_dipole: bool = True,
                  compute_polarizability: bool = True,
@@ -143,7 +143,6 @@ class LesPolarWrapper(nn.Module):
 
         self.feature_key = feature_key
         self.e_ext_key = e_ext_key
-        self.atomic_numbers_key = atomic_numbers_key
         self.induced_q = induced_q
         self.induced_u = induced_u
         self.latent_u = latent_u
@@ -171,10 +170,10 @@ class LesPolarWrapper(nn.Module):
         self.required_derivatives = []
         self.required_derivatives.append('cell')
 
-        self.tensor_feed_forward = TensorFeedForward(3,lomax=1)
+        self.tensor_feed_forward = TensorFeedForward(n_scf+2,lomax=2)
         self.fixed_charges = FixedCharges()
 
-    def forward(self, data: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, data: Dict[str, torch.Tensor], training=False, **kwargs) -> Dict[str, torch.Tensor]:
 
         # reshape the feature vectors
         if self.feature_key not in data:

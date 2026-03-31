@@ -35,7 +35,6 @@ class Cace(nn.Module):
         radial_basis: nn.Module,
         cutoff_fn: Callable,
         max_l: int,
-        max_l_out: int,
         max_nu: int,
         num_message_passing: int,
         node_encoder: Optional[nn.Module] = None,
