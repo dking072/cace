@@ -206,13 +206,19 @@ class LesPolarWrapper(nn.Module):
 
         #Ewald requires charge dummy index
         for i in range(self.n_scf+1):
+            if self.channel_alpha:
+                alphas_now = latent_alphas[:,i,...] if self.induced_u else None
+                kappas_now = latent_kappas[:,i,...] if self.induced_q else None
+            else:
+                alphas_now = latent_alphas[:,0,...] if self.induced_u else None
+                kappas_now = latent_kappas[:,0,...] if self.induced_q else None
             result = self.les(
                 positions=data['positions'],
                 cell=data['cell'].view(-1, 3, 3),
                 latent_charges = latent_charges,
                 latent_dipoles = latent_dipoles if self.latent_u else None,
-                latent_kappas = latent_kappas[:,i,...] if self.induced_q else None,
-                latent_alphas = latent_alphas[:,i,...] if self.induced_u else None,
+                latent_kappas = kappas_now,
+                latent_alphas = alphas_now,
                 atomic_numbers = None,
                 batch=data["batch"],
                 e_ext=e_ext,
