@@ -6,6 +6,8 @@ from cace.modules.tensornet import TensorFeedForward
 from les.util import grad
 from les.module import FixedCharges
 from ..tools import scatter_sum
+from .pol_tools import calc_E_ext
+from .pol_tools import polarizability_from_e_ext_deriv
 
 class LesVectorWrapper(nn.Module):
     def __init__(self,
@@ -100,7 +102,7 @@ class LesVectorWrapper(nn.Module):
         field = torch.vstack(field_results)
         return e_lr, field
 
-    def forward(self, data: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, data: Dict[str, torch.Tensor], training=False, **kwargs) -> Dict[str, torch.Tensor]:
 
         # reshape the feature vectors
         if isinstance(self.feature_key, str):
@@ -188,8 +190,7 @@ class LesVectorWrapper(nn.Module):
         data["latent_charges"] = latent_charges
         data["latent_dipoles"] = latent_dipoles
 
-        if self.compute_dipole:
-            from .pol_tools import calc_E_ext
+        if self.compute_dipole and not training:
             unique_batches = torch.unique(data["batch"])
             E_ext_list = []
             mu_list = []
@@ -203,7 +204,7 @@ class LesVectorWrapper(nn.Module):
                 cell_now = data["cell"][i] if (torch.linalg.det(data["cell"][i]) > 0) else None 
                 q_now = data["latent_charges"][mask].squeeze()
                 u_now = data["latent_dipoles"][mask].squeeze() if (self.latent_u or self.induced_u) else None
-                E_ext, mu, mu_u, _, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now,alpha=None,kappa=None)
+                E_ext, mu, mu_u, phase, E_ext_u = calc_E_ext(r_now,q_now,e_ext,cell=cell_now,u=u_now,alpha=None,kappa=None)
                 phase_list.append(phase)
                 E_ext_list.append(E_ext)
                 E_ext_u_list.append(E_ext_u)
@@ -222,6 +223,7 @@ class LesVectorWrapper(nn.Module):
                 dipole, dipole_u = mu, mu_u
         else:
             dipole = torch.zeros_like(data["positions"][0])
+        dipole_tot = dipole + dipole_u
 
         if self.compute_bec:
             if self.via_energy_derivatives:
@@ -242,15 +244,30 @@ class LesVectorWrapper(nn.Module):
                     )
                 if data["latent_dipoles"] is not None:
                     bec = bec.sum(dim=1)
-                    
-        if self.compute_polarizability:
-            from .pol_tools import polarizability_from_e_ext_deriv
-            dipole_tot = (dipole + dipole_u) if dipole_u is not None else dipole
-            polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
-            if polarizability is None:
-                polarizability = torch.zeros_like(data["cell"])
+
+        if (self.compute_polarizability and self.induced_u) and not training:
+            if not self.via_energy_derivatives and (self.n_scf == 0):
+                polarizability = scatter_sum(
+                    src=latent_alphas,
+                    index=data["batch"],
+                    dim=0,
+                    dim_size=data["batch"].max().item() + 1  # Ensures correct batch sizing
+                ).squeeze()
+            else:
+                polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
+                if polarizability is None:
+                    polarizability = torch.zeros_like(data["cell"])
         else:
             polarizability = torch.zeros_like(data["cell"])
+
+        # if self.compute_polarizability:
+        #     from .pol_tools import polarizability_from_e_ext_deriv
+        #     dipole_tot = (dipole + dipole_u) if dipole_u is not None else dipole
+        #     polarizability = polarizability_from_e_ext_deriv(dipole_tot,e_ext)
+        #     if polarizability is None:
+        #         polarizability = torch.zeros_like(data["cell"])
+        # else:
+        #     polarizability = torch.zeros_like(data["cell"])
 
         if self.compute_energy:
             data["LES_energy"] = e_lr

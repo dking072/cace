@@ -296,6 +296,9 @@ class Cace(nn.Module):
         except:
             displacement = None
 
+        e_ext = torch.zeros_like(data["positions"][0])
+        e_ext.requires_grad = True
+
         output = {
             "positions": data["positions"],
             "cell": data["cell"],
@@ -303,6 +306,8 @@ class Cace(nn.Module):
             "batch": batch_now,
             "node_feats": node_feats_out,
             "node_feats_l": l_feats_out,
+            "atomic_numbers": data["atomic_numbers"],
+            "e_ext": e_ext,
             }
 
         if hasattr(self, "forward_features") and len(self.forward_features) > 0:

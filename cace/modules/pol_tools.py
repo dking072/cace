@@ -1,5 +1,22 @@
 import torch
 
+def calc_E_ext_simple(r_raw,q,u,e_ext,cell=None):
+    if cell is None:
+        r_raw = r_raw - r_raw.mean(dim=0)[None,:]
+        phase = torch.ones_like(r_raw)
+    if cell is not None:
+        r_frac = torch.matmul(r_raw, torch.linalg.inv(cell)) #[N,3]
+        phase = torch.exp(1j * 2.* torch.pi * r_frac) #[N,3]
+        r_raw = torch.matmul(phase, cell / (1j * 2.* torch.pi)) #[N,3]
+
+    #Potentially imaginary
+    q = q - q.mean()
+    mu = (r_raw * q[:,None]).sum(dim=0)
+    mu = u.sum(dim=0)
+    E_ext = -(e_ext * mu).sum()
+    return E_ext, mu
+
+
 def calc_E_ext(r_raw,q,e_ext,cell=None,u=None,kappa=None,alpha=None):
     if cell is None:
         r_raw = r_raw - r_raw.mean(dim=0)[None,:]
@@ -69,15 +86,18 @@ def dipole_from_e_ext_deriv(E_ext,e_ext,E_ext_u=None,latent_dipoles=None):
         )[0]  # [n_out, 3]
         dipole = dipole + 1j * dipole_imag
 
-    dipole_u = -torch.autograd.grad(
-        outputs=E_ext_u,
-        inputs=e_ext,
-        grad_outputs=eye,
-        retain_graph=True,
-        create_graph=True,
-        allow_unused=False,
-        is_grads_batched=True,
-    )[0]  # [n_out, 3]
+    if E_ext_u is not None:
+        dipole_u = -torch.autograd.grad(
+            outputs=E_ext_u,
+            inputs=e_ext,
+            grad_outputs=eye,
+            retain_graph=True,
+            create_graph=True,
+            allow_unused=False,
+            is_grads_batched=True,
+        )[0]  # [n_out, 3]
+    else:
+        dipole_u = None
 
     #dipole_q, dipole_u
     return dipole, dipole_u
@@ -99,7 +119,7 @@ def polarizability_from_e_ext_deriv(dipole,e_ext):
         outputs=dipole_flat.real,
         inputs=e_ext,
         grad_outputs=grad_outputs,
-        retain_graph=dipole_flat.is_complex(),  # keep graph if we still need imag pass
+        retain_graph=True,  # keep graph if we still need imag pass
         create_graph=False,
         allow_unused=True,
         is_grads_batched=True,
