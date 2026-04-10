@@ -114,22 +114,16 @@ class LesWrapper(nn.Module):
         if hasattr(self, 'make_kappa_positive') and self.make_kappa_positive:
             data[self.kappa_key] = data[self.kappa_key]**2
 
-        if "external_field" in data.keys():
-            e_ext = data["external_field"]
-        else:
-            e_ext = torch.zeros_like(data["positions"][0])
-
         result = self.les(
             desc=features,
             latent_charges=data[self.charge_key] if features is None else None,
             latent_dipoles=data[self.dipole_key] if self.dipole_key is not None else None,
             latent_alphas=data[self.alpha_key] if self.alpha_key is not None else None,
             latent_kappas=data[self.kappa_key] if self.kappa_key is not None else None,
-            atomic_numbers=data[self.atomic_number_key] if hasattr(self, 'atomic_number_key') and  self.atomic_number_key is not None else None,
+            atomic_numbers=data[self.atomic_number_key] if hasattr(self, 'atomic_number_key') and self.atomic_number_key is not None else None,
             positions=data['positions'],
             cell=data['cell'].view(-1, 3, 3),
             batch=data["batch"],
-            e_ext = e_ext,
             compute_energy=self.compute_energy,
             compute_bec=self.compute_bec,
             bec_output_index=self.bec_output_index,
