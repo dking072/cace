@@ -18,7 +18,7 @@ class TensorLinearMixing(nn.Module):
     def forward(self,
                 input_tensors : Dict[int, torch.Tensor],
                 ) -> Dict[int, torch.Tensor]:
-        output_tensors = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        output_tensors = {}
         for l, linear in enumerate(self.linear_list):
             input_tensor = torch.transpose(input_tensors[l], 1, -1)
             output_tensor = linear(input_tensor)
@@ -47,7 +47,7 @@ class TensorProductLayer(nn.Module):
                 x : Dict[int, torch.Tensor],
                 y : Dict[int, torch.Tensor],
                 ) -> Dict[int, torch.Tensor]:
-        output_tensors = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        output_tensors = {}
         for x_way, y_way, z_way in self.combinations:
             if x_way not in x or y_way not in y:
                 continue
@@ -81,7 +81,7 @@ class TensorActivationGate(nn.Module):
             mlp_feed.append(norm)
         mlp_feed = torch.hstack(mlp_feed)
 
-        output_tensors = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        output_tensors = {}
         output_tensors[0] = self.net0(mlp_feed)
         for l in range(1,self.lomax+1):
             mlp_out = self.norm_net_list[l-1](mlp_feed)

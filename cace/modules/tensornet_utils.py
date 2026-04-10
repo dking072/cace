@@ -59,10 +59,9 @@ def find_moment(batch_data  : Dict[str, torch.Tensor],
     return batch_data['moment' + str(n_way)]
 
 
-@torch.jit.script
-def _scatter_add(x        : torch.Tensor, 
-                 idx_i    : torch.Tensor, 
-                 dim_size : Optional[int]=None, 
+def _scatter_add(x        : torch.Tensor,
+                 idx_i    : torch.Tensor,
+                 dim_size : Optional[int]=None,
                  dim      : int = 0
                  ) -> torch.Tensor:
     shape = list(x.shape)
@@ -74,7 +73,6 @@ def _scatter_add(x        : torch.Tensor,
     return y
 
 
-@torch.jit.script
 def _aggregate_new(T1: torch.Tensor,
                    T2: torch.Tensor,
                    way1 : int,
@@ -85,8 +83,8 @@ def _aggregate_new(T1: torch.Tensor,
     coupling_way = (way1 + way2 - way3) // 2 #lc
     n_way = way1 + way2 - coupling_way + 2 #plus 2 is for E, C, so this is lo + lc (+ 2)
     output_tensor = expand_to(T1, n_way, dim=-1) * expand_to(T2, n_way, dim=2)
-    # T1:  [n_edge, n_channel, n_dim, n_dim, ...,     1] 
-    # T2:  [n_edge, n_channel,     1,     1, ..., n_dim]  
+    # T1:  [n_edge, n_channel, n_dim, n_dim, ...,     1]
+    # T2:  [n_edge, n_channel,     1,     1, ..., n_dim]
     # with (way1 + way2 - coupling_way) dim after n_channel
     # We should sum up (coupling_way) n_dim
     if coupling_way > 0:
@@ -103,18 +101,17 @@ def single_tensor_product(x : torch.Tensor,
         return _aggregate_new(x, y, x_way, y_way, z_way)
 
 
-@torch.jit.script
 def normalize_tensors(input_tensors : Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
-        output_tensors = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        output_tensors = {}
         for l in input_tensors.keys():
             input_tensor_ = input_tensors[l].reshape(input_tensors[l].shape[0], input_tensors[l].shape[1], -1)
             factor = 1/(torch.sum(input_tensor_ ** 2, dim=2) + 1)
             output_tensors[l] = expand_to(factor,l+2) * input_tensors[l]
         return output_tensors
 
-@torch.jit.script
+
 def layer_norm(input_tensors : Dict[int, torch.Tensor],eps:float=1e-10) -> Dict[int, torch.Tensor]:
-        output_tensors = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        output_tensors = {}
         input_tensors[0] = input_tensors[0] - input_tensors[0].mean(dim=-1)[:,None]
         for l in input_tensors.keys():
             input_tensor_ = input_tensors[l].reshape(input_tensors[l].shape[0], input_tensors[l].shape[1], -1)
@@ -123,10 +120,10 @@ def layer_norm(input_tensors : Dict[int, torch.Tensor],eps:float=1e-10) -> Dict[
             output_tensors[l] = expand_to(factor,l+2) * input_tensors[l]
         return output_tensors
 
+
 #The below is taken from TensorNet
 #https://proceedings.neurips.cc/paper_files/paper/2023/hash/75c2ec5f98d7b2f50ad68033d2c07086-Abstract-Conference.html
 
-@torch.jit.script
 def decompose_tensor(tensor : torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor]:
     """Partial tensor decomposition of rank 2 into irreducible components."""
     I = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)
@@ -135,10 +132,9 @@ def decompose_tensor(tensor : torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor,t
     S = 0.5 * (tensor + tensor.transpose(-2, -1)) - negI
     return I, A, S
 
-@torch.jit.script
+
 def irrep_tensors(input_tensors : Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
     I, A, S = decompose_tensor(input_tensors[2])
     input_tensors[0] = torch.hstack([input_tensors[0],I])
     input_tensors[2] = torch.hstack([A,S])
     return input_tensors
-

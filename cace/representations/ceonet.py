@@ -136,15 +136,15 @@ class MessagePassingLayer(nn.Module):
         idx_j = data["edge_index"][1]
         rbf_ij = data["rbf_ij"]
 
-        hi = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        hi = {}
         for l in range(self.linmax + 1):
             hi[l] = data["node_feats"][l][idx_i]
 
-        hj = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        hj = {}
         for l in range(self.linmax + 1):
             hj[l] = data["node_feats"][l][idx_j]
 
-        u = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        u = {}
         for l, rbf_mixing in enumerate(self.rbf_mixing_list):
             ones = torch.ones(rbf_ij.shape[0], self.nc, device=rbf_ij.device)
             u[l] = find_moment(data, l).unsqueeze(1) * expand_to(ones, l + 2)
@@ -166,7 +166,7 @@ class MessagePassingLayer(nn.Module):
 
         n_atoms = data["atomic_numbers"].shape[0]
         idx_i = data["edge_index"][0]
-        node_message_hi_hj = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        node_message_hi_hj = {}
         for l in range(self.lomax + 1):
             node_message_hi_hj[l] = _scatter_add(edge_messages[l], idx_i, dim_size=n_atoms)
             node_message_hi_hj[l] = node_message_hi_hj[l] / self.avg_neighbors
@@ -188,7 +188,7 @@ class MessagePassingLayer(nn.Module):
         node_message_hi_hi = self.self_interaction(data["node_feats"])
         node_message_hi_hj = self.calc_node_message_hi_hj(data)
 
-        combined_message = torch.jit.annotate(Dict[int, torch.Tensor], {})
+        combined_message = {}
         for l in range(self.lomax + 1):
             if l in node_message_hi_hi:
                 combined_message[l] = torch.hstack([node_message_hi_hi[l], node_message_hi_hj[l]])

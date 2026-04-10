@@ -22,14 +22,7 @@ if on_cluster:
     root_xyz = "/global/scratch/users/king1305/data/train-H2O_RPBE-D3.xyz"
 data = XYZData(root_xyz, batch_size=batch_size, cutoff=cutoff, test_p=0)
 
-n_scf = 1
-bias_alpha = True
-tag = ""
-if bias_alpha:
-    tag += "_ba"
-tag += f"cutoff{int(cutoff * 10)}"
-tag += f"{n_scf}"
-logs_name = f"caceles{tag}"
+logs_name = f"cace_les"
 
 # ---------------------------------------------------------------------------
 # Representation
@@ -70,10 +63,10 @@ multipoles = TensorReadout(
 les_e = LesWrapper(
     dipole_key='dipoles',
     alpha_key='alphas',
-    n_scf=n_scf,
-    bias_alpha=bias_alpha,
     energy_key='ewald_potential',
     compute_bec=False,
+    make_alpha_positive=True,
+    add_scalar_alpha=True,
 )
 
 sr_energy = cace.modules.atomwise.Atomwise(
@@ -140,11 +133,17 @@ metrics = [e_metric, f_metric]
 # ---------------------------------------------------------------------------
 # Initialise lazy layers
 # ---------------------------------------------------------------------------
+model.cuda()
 for batch in data.train_dataloader():
+    batch.cuda()
     out = model(batch)
     for k in out:
-        print(k, out[k][0])
+        if out[k] is not None:
+            print(k, out[k][0])
+        else:
+            print(f"{k} is None")
     break
+
 
 # ---------------------------------------------------------------------------
 # Resume from checkpoint if available
