@@ -4,24 +4,30 @@ from cace.representations import CEONet
 from cace.modules import TensorReadout
 from cace.modules.forces import Forces
 from cace.modules.les_wrapper import LesWrapper
+from cace.modules import BesselRBF, PolynomialCutoff
 from cace.models.atomistic import NeuralNetworkPotential
 from cace import data
 from cace.tools import torch_geometric
 
-cutoff = 4.0
+cutoff = 4.5
 
 # --- Build model ---
+radial_basis = BesselRBF(cutoff=cutoff, n_rbf=6, trainable=True)
+cutoff_fn = PolynomialCutoff(cutoff=cutoff)
 ceonet = CEONet(
-    nc=16,
-    layers=2,
-    n_rbf=6,
-    lomax=2,
-    cutoff=cutoff,
     zs=[1, 8],
     n_atom_basis=4,
+    cutoff=cutoff,
+    radial_basis=radial_basis,
+    cutoff_fn=cutoff_fn,
+    max_l_cace=3,
+    max_l_ceonet=2,
+    max_nu_cace=3,
     n_radial_basis=12,
-    cace_max_nu=2,
+    nc=32,
+    layers=2,
     avg_neighbors=3,
+    stacking=True
 )
 
 multipoles = TensorReadout(

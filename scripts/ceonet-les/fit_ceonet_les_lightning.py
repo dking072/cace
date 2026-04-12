@@ -5,6 +5,7 @@ from cace.tasks import LightningTrainingTask
 
 import cace
 from cace.representations import CEONet
+from cace.modules import BesselRBF, PolynomialCutoff
 from cace.modules import TensorReadout
 from cace.models.atomistic import NeuralNetworkPotential
 from cace.modules.les_wrapper import LesWrapper
@@ -26,17 +27,23 @@ logs_name = f"ceonet_les"
 # ---------------------------------------------------------------------------
 # Representation
 # ---------------------------------------------------------------------------
+radial_basis = BesselRBF(cutoff=cutoff, n_rbf=6, trainable=True)
+cutoff_fn = PolynomialCutoff(cutoff=cutoff)
+
 ceonet = CEONet(
     zs=[1, 8],
+    n_atom_basis=4,
+    cutoff=cutoff,
+    radial_basis=radial_basis,
+    cutoff_fn=cutoff_fn,
+    max_l_cace=3,
+    max_l_ceonet=2,
+    max_nu_cace=3,
+    n_radial_basis=12,
     nc=32,
     layers=2,
-    n_rbf=6,
-    lomax=2,
-    cutoff=cutoff,
-    n_atom_basis=4,
-    n_radial_basis=12,
-    cace_max_nu=2,
     avg_neighbors=3,
+    stacking=False
 )
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,14 @@
 import torch
 import torch.nn as nn
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from .cace_representation import Cace
 from ..modules.tensornet import TensorProductLayer, TensorLinearMixing, TensorFeedForward
 from ..modules.tensornet_utils import (
-    expand_to, find_distances, find_moment, _scatter_add,
+    expand_to, find_moment, _scatter_add,
     normalize_tensors, single_tensor_product, irrep_tensors,
 )
-from ..modules import GaussianRBFCentered, PolynomialCutoff
+from ..modules import get_edge_vectors_and_lengths
 
 __all__ = ["CEONet"]
 
@@ -211,32 +211,46 @@ class CEONet(nn.Module):
     Uses CACE A-basis features (message passing step 0, via ``node_feats_l``)
     as the initial node features, then runs the CEONet tensorial message
     passing layers on top.
+
+    The ``radial_basis`` and ``cutoff_fn`` arguments match the CACE API so the
+    same objects can be shared or reused between the two representations.
     """
 
     def __init__(self,
-                 nc: int,
-                 layers: int = 4,
-                 n_rbf: int = 8,
-                 lomax: int = 2,
-                 cutoff: float = 4.5,
-                 stacking: bool = False,
-                 irrep_mixing: bool = False,
                  zs: List[int] = list(range(1, 54)),
                  n_atom_basis: int = 4,
+                 cutoff: float = 4.5,
+                 radial_basis: Optional[nn.Module] = None,
+                 cutoff_fn: Optional[Callable] = None,
+                 max_l_cace: int = 3,
+                 max_l_ceonet: int = 2,
+                 max_nu_cace: int = 2,
                  n_radial_basis: int = 12,
-                 cace_max_nu: int = 2,
+                 embed_receiver_nodes: bool = True,
+                 nc: int = 32,
+                 layers: int = 2,
+                 stacking: bool = True,
+                 irrep_mixing: bool = False,
                  avg_neighbors: int = 3,
+                 node_feats_scale: float = 1,
                  ) -> None:
         super().__init__()
         self.nc = nc
-        self.lomax = lomax
+        self.lomax = max_l_ceonet
         self.layers = layers
         self.irrep_mixing = irrep_mixing
         self.norm_func = normalize_tensors
+        self.node_feats_scale = node_feats_scale
 
-        # Radial basis shared between CACE representation and MP rbf_ij
-        radial_basis = GaussianRBFCentered(n_rbf=n_rbf, cutoff=cutoff, start=1.0, trainable=True)
-        cutoff_fn = PolynomialCutoff(cutoff)
+        # Radial basis and cutoff shared between CACE A-basis and MP rbf_ij.
+        # If not provided, fall back to sensible defaults so the class can
+        # still be instantiated without external radial objects.
+        if radial_basis is None:
+            from ..modules import BesselRBF
+            radial_basis = BesselRBF(cutoff=cutoff, n_rbf=8, trainable=True)
+        if cutoff_fn is None:
+            from ..modules import PolynomialCutoff
+            cutoff_fn = PolynomialCutoff(cutoff)
         self.radial = radial_basis
         self.cutoff_fn = cutoff_fn
 
@@ -247,21 +261,24 @@ class CEONet(nn.Module):
             cutoff=cutoff,
             radial_basis=radial_basis,
             cutoff_fn=cutoff_fn,
-            max_l=lomax,
-            max_nu=cace_max_nu,
+            max_l=max_l_cace,
+            max_nu=max_nu_cace,
             num_message_passing=0,
-            embed_receiver_nodes=True,
+            embed_receiver_nodes=embed_receiver_nodes,
             n_radial_basis=n_radial_basis,
-            max_l_out=lomax,
+            max_l_out=max_l_ceonet,
         )
 
+        # Infer n_rbf from the radial basis object
+        n_rbf = getattr(radial_basis, 'n_rbf', getattr(radial_basis, 'n_radial_basis', 8))
+
         # Mix CACE A-basis features to nc channels
-        self.a_mix = TensorFeedForward(nc, lomax)
+        self.a_mix = TensorFeedForward(nc, self.lomax)
 
         # Message passing layers
         self.mp_layers = nn.ModuleList([
             MessagePassingLayer(
-                nc, n_rbf=n_rbf, lomax=lomax, linmax=lomax,
+                nc, n_rbf=n_rbf, lomax=self.lomax, linmax=self.lomax,
                 stacking=stacking, irrep_mixing=irrep_mixing,
                 linear_messages=True, avg_neighbors=avg_neighbors,
             )
@@ -270,20 +287,15 @@ class CEONet(nn.Module):
 
         # B-basis construction and normalization
         nu3_combos = []
-        for l1 in range(1, lomax + 1):
-            for l2 in range(1, lomax + 1):
+        for l1 in range(1, self.lomax + 1):
+            for l2 in range(1, self.lomax + 1):
                 l3 = l1 + l2
-                if l3 <= lomax:
+                if l3 <= self.lomax:
                     nu3_combos.append((l1, l3, l2))
         self.nu3_combos = nu3_combos
-        num_b = 1 + lomax + len(nu3_combos)
+        num_b = 1 + self.lomax + len(nu3_combos)
         self.b_size = nc * num_b * (layers + 1)
         self.b_norm = nn.LayerNorm([self.b_size], bias=True)
-
-    def calc_rbf(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        _, dij, _ = find_distances(data)
-        data["rbf_ij"] = self.radial(dij[:, None]) * self.cutoff_fn(dij[:, None])
-        return data
 
     def make_b(self, dct: Dict[int, torch.Tensor]) -> torch.Tensor:
         bfeats = [dct[0]]
@@ -295,7 +307,21 @@ class CEONet(nn.Module):
         return torch.hstack(bfeats)
 
     def forward(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        data = self.calc_rbf(data)
+        # Compute edge geometry once using PBC-correct shifts.  The unit
+        # vectors (uij) and distances (dij) are cached in `data` so that
+        # find_moment → find_distances inside each MessagePassingLayer
+        # returns them directly without recomputation.
+        uij, dij = get_edge_vectors_and_lengths(
+            positions=data["positions"],
+            edge_index=data["edge_index"],
+            shifts=data["shifts"],
+            normalize=True,
+        )
+        # uij: [n_edges, 3]  dij: [n_edges, 1]
+        data["uij"] = uij
+        data["dij"] = dij.squeeze(-1)          # [n_edges]
+        data["rij"] = uij * dij                # [n_edges, 3]
+        data["rbf_ij"] = self.radial(dij) * self.cutoff_fn(dij)  # [n_edges, n_rbf]
 
         # Get CACE A-basis features (node_feats_l from message passing step 0)
         cace_out = self.representation(data)
@@ -322,8 +348,11 @@ class CEONet(nn.Module):
         # Concatenate along the channel dimension (dim=1) for each l
         node_feats_l = {l: torch.cat(equivariant_feats[l], dim=1) for l in range(self.lomax + 1)}
 
-        # Normalize concatenated B basis
-        data["node_feats"] = self.b_norm(torch.hstack(bfeats))
+        # Normalize concatenated B basis, then scale down so downstream
+        # Atomwise / LES descriptors start near zero (same regime as CACE's
+        # un-normalised B-basis).  LayerNorm forces variance=1 per atom, which
+        # would otherwise make SR_energy and LES charges O(1) at init.
+        data["node_feats"] = self.b_norm(torch.hstack(bfeats)) * self.node_feats_scale
 
         return {
             "positions": data["positions"],
@@ -331,4 +360,5 @@ class CEONet(nn.Module):
             "batch": batch,
             "node_feats": data["node_feats"],
             "node_feats_l": node_feats_l,
+            "displacement": data["displacement"]
         }

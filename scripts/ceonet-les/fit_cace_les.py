@@ -1,26 +1,23 @@
 #!/usr/bin/env python
 # coding: utf-8
-"""Training script for CEONet + LES long-range interactions.
+"""Training script for CACE + LES long-range interactions.
 
-Mirrors the structure of data/t-models/t-uiu/fit_cace_les.py but uses
-CEONet as the representation instead of Cace.
+Uses the CACE model from fit_cace_les_lightning.py with the non-lightning
+4-stage progressive training schedule from fit_ceonet_les.py.
 """
 
-import sys
 import os
 import logging
 
-import numpy as np
 import torch
-import torch.nn as nn
 
 import cace
-from cace.representations import CEONet
+from cace.representations import Cace
 from cace.modules import BesselRBF, PolynomialCutoff
 from cace.modules import TensorReadout
 from cace.models.atomistic import NeuralNetworkPotential
 from cace.tasks.train import TrainingTask
-from cace.modules import LesWrapper
+from cace.modules.les_wrapper import LesWrapper
 
 torch.set_default_dtype(torch.float32)
 cace.tools.setup_logger(level='INFO')
@@ -32,7 +29,7 @@ cutoff = 4.5
 logging.info("reading data")
 
 on_cluster = False
-if 'SLURM_JOB_CPUS_PER_NODE' in os.environ.keys():
+if 'SLURM_JOB_CPUS_PER_NODE' in os.environ:
     on_cluster = True
 root_xyz = "/home/king1305/Apps/les_fit/data-benchmark/train-H2O_RPBE-D3.xyz"
 if on_cluster:
@@ -62,33 +59,32 @@ logging.info(f"device: {use_device}")
 # ---------------------------------------------------------------------------
 # Representation
 # ---------------------------------------------------------------------------
-logging.info("building CEONet representation")
+logging.info("building CACE representation")
 
 radial_basis = BesselRBF(cutoff=cutoff, n_rbf=6, trainable=True)
 cutoff_fn = PolynomialCutoff(cutoff=cutoff)
 
-ceonet = CEONet(
+cace_representation = Cace(
     zs=[1, 8],
     n_atom_basis=4,
+    embed_receiver_nodes=True,
     cutoff=cutoff,
-    radial_basis=radial_basis,
     cutoff_fn=cutoff_fn,
-    max_l_cace=3,
-    max_l_ceonet=2,
-    max_nu_cace=3,
+    radial_basis=radial_basis,
     n_radial_basis=12,
-    nc=32,
-    layers=2,
-    avg_neighbors=3,
-    stacking=False,
+    max_l=3,
+    max_l_out=2,
+    max_nu=3,
+    num_message_passing=0,
+    type_message_passing=['Bchi'],
+    args_message_passing={'Bchi': {'shared_channels': False, 'shared_l': False}},
+    timeit=False,
 )
-ceonet.to(device)
+cace_representation.to(device)
 
 # ---------------------------------------------------------------------------
 # Output modules
 # ---------------------------------------------------------------------------
-
-# Predict atomic multipoles from equivariant node features
 multipoles = TensorReadout(
     max_l=2,
     l0_key='kappas',
@@ -99,7 +95,6 @@ multipoles = TensorReadout(
     l2_output_scale=1.0,
 )
 
-# Long-range electrostatics + dispersion via LES
 les_e = LesWrapper(
     dipole_key='dipoles',
     alpha_key='alphas',
@@ -109,7 +104,6 @@ les_e = LesWrapper(
     add_scalar_alpha=True,
 )
 
-# Short-range energy
 sr_energy = cace.modules.atomwise.Atomwise(
     n_layers=3,
     output_key='SR_energy',
@@ -121,16 +115,16 @@ sr_energy = cace.modules.atomwise.Atomwise(
 
 e_add = cace.modules.FeatureAdd(
     feature_keys=['SR_energy', 'ewald_potential'],
-    output_key='CACE_energy',
+    output_key='pred_energy',
 )
 
 forces = cace.modules.Forces(
-    energy_key='CACE_energy',
-    forces_key='CACE_forces',
+    energy_key='pred_energy',
+    forces_key='pred_force',
 )
 
 model = NeuralNetworkPotential(
-    representation=ceonet,
+    representation=cace_representation,
     output_modules=[multipoles, les_e, sr_energy, e_add, forces],
 )
 model.to(device)
@@ -146,7 +140,7 @@ for batch in train_loader:
         if out[k] is not None:
             logging.info(f"  {k}: {out[k][0]}")
         else:
-            logging.info(f"{k} is None")            
+            logging.info(f"{k} is None")
     break
 
 # ---------------------------------------------------------------------------
@@ -154,26 +148,26 @@ for batch in train_loader:
 # ---------------------------------------------------------------------------
 energy_loss = cace.tasks.GetLoss(
     target_name='energy',
-    predict_name='CACE_energy',
+    predict_name='pred_energy',
     loss_fn=torch.nn.MSELoss(),
     loss_weight=0.1,
 )
 force_loss = cace.tasks.GetLoss(
     target_name='forces',
-    predict_name='CACE_forces',
+    predict_name='pred_force',
     loss_fn=torch.nn.MSELoss(),
     loss_weight=1000,
 )
 
 e_metric = cace.tools.Metrics(
     target_name='energy',
-    predict_name='CACE_energy',
+    predict_name='pred_energy',
     name='e/atom',
     per_atom=True,
 )
 f_metric = cace.tools.Metrics(
     target_name='forces',
-    predict_name='CACE_forces',
+    predict_name='pred_force',
     name='f',
 )
 
@@ -200,36 +194,36 @@ for i in range(5):
     )
     task.fit(train_loader, valid_loader, epochs=40, screen_nan=False)
 
-task.save_model('ceonet-model.pth')
+task.save_model('cace-model.pth')
 
 logging.info("Stage 2: balanced (weight 1 / 1000)")
 energy_loss = cace.tasks.GetLoss(
-    target_name='energy', predict_name='CACE_energy',
+    target_name='energy', predict_name='pred_energy',
     loss_fn=torch.nn.MSELoss(), loss_weight=1,
 )
 task.update_loss([energy_loss, force_loss])
 task.fit(train_loader, valid_loader, epochs=100, screen_nan=False)
-task.save_model('ceonet-model-2.pth')
+task.save_model('cace-model-2.pth')
 model.to(device)
 
 logging.info("Stage 3: energy-weighted (weight 10 / 1000)")
 energy_loss = cace.tasks.GetLoss(
-    target_name='energy', predict_name='CACE_energy',
+    target_name='energy', predict_name='pred_energy',
     loss_fn=torch.nn.MSELoss(), loss_weight=10,
 )
 task.update_loss([energy_loss, force_loss])
 task.fit(train_loader, valid_loader, epochs=100, screen_nan=False)
-task.save_model('ceonet-model-3.pth')
+task.save_model('cace-model-3.pth')
 model.to(device)
 
 logging.info("Stage 4: energy-dominated (weight 1000 / 1000)")
 energy_loss = cace.tasks.GetLoss(
-    target_name='energy', predict_name='CACE_energy',
+    target_name='energy', predict_name='pred_energy',
     loss_fn=torch.nn.MSELoss(), loss_weight=1000,
 )
 task.update_loss([energy_loss, force_loss])
 task.fit(train_loader, valid_loader, epochs=100, screen_nan=False)
-task.save_model('ceonet-model-4.pth')
+task.save_model('cace-model-4.pth')
 
 logging.info("Finished")
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

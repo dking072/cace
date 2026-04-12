@@ -42,7 +42,10 @@ def find_distances(data  : Dict[str, torch.Tensor],) -> Tuple[torch.Tensor, torc
     idx_i = data["edge_index"][0]
     idx_j = data["edge_index"][1]
     if 'rij' not in data:
-        data['rij'] = data['positions'][idx_j] - data['positions'][idx_i]
+        rij = data['positions'][idx_j] - data['positions'][idx_i]
+        if 'shifts' in data and data['shifts'] is not None:
+            rij = rij + data['shifts']
+        data['rij'] = rij
     if 'dij' not in data:
         data['dij'] = torch.norm(data['rij'], dim=-1)
     if 'uij' not in data:
