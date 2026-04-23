@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
-"""Lightning-trainer version of ``caceles-quads-dipep.py``.
+"""CACE + LES with permanent atomic dipoles only (no induced, no quads).
 
-Same CACE + LES (quadrupoles + polarizabilities) model and same dipeptides
-pre-split data, but driven by ``LightningTrainingTask`` with the single-stage
-schedule used in ``caceles-multipole-2/caceles-bq.py`` (Adam betas default
-(0.9, 0.999), ReduceLROnPlateau, gradient_clip_val=10, checkpoint/restart).
+Variant of ``caceles-uiuQ-dipep.py``. The TensorReadout emits only per-atom
+charges (kappas, latent — unused by LES) and per-atom dipoles; LesWrapper
+consumes the charges and permanent dipoles. No alpha, no induction, no
+quadrupole.
 """
 
 import os
@@ -114,10 +114,10 @@ data = DipepData(
     atomic_energies=atomic_energies,
 )
 
-logs_name = "caceles_quads_dipep"
+logs_name = "caceles_u_dipep"
 
 # ---------------------------------------------------------------------------
-# Representation
+# Representation — only need l<=1 outputs (scalars + vectors)
 # ---------------------------------------------------------------------------
 radial_basis = BesselRBF(cutoff=cutoff, n_rbf=6, trainable=True)
 cutoff_fn = PolynomialCutoff(cutoff=cutoff)
@@ -131,7 +131,7 @@ cace_representation = Cace(
     radial_basis=radial_basis,
     n_radial_basis=12,
     max_l=4,
-    max_l_out=2,
+    max_l_out=1,
     max_nu=3,
     num_message_passing=1,
     type_message_passing=['M', 'Ar', 'Bchi'],
@@ -140,26 +140,20 @@ cace_representation = Cace(
 )
 
 # ---------------------------------------------------------------------------
-# Output modules
+# Output modules — permanent dipoles only
 # ---------------------------------------------------------------------------
 multipoles = TensorReadout(
-    max_l=2,
+    max_l=1,
     l0_key='kappas',
     l1_key='dipoles',
-    l2_key=['alphas', 'quads'],
     l0_output_scale=0.1,
     l1_output_scale=1.0,
-    l2_output_scale=1.0,
 )
 
 les_e = LesWrapper(
     dipole_key='dipoles',
-    quad_key='quads',
-    alpha_key='alphas',
     energy_key='ewald_potential',
     compute_bec=False,
-    make_alpha_positive=True,
-    add_scalar_alpha=True,
 )
 
 sr_energy = cace.modules.atomwise.Atomwise(
@@ -233,5 +227,5 @@ task = LightningTrainingTask(
     scheduler_args={'mode': 'min', 'factor': 0.8, 'patience': 10},
     optimizer_args={'lr': 0.01},
 )
-task.fit(data, dev_run=dev_run, max_epochs=500, chkpt=chkpt,
+task.fit(data, dev_run=dev_run, max_epochs=1000, chkpt=chkpt,
          progress_bar=progress_bar)

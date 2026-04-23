@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
-"""Lightning-trainer version of ``cace-sr-dipep.py`` — SR-only CACE baseline.
+"""Lightning-trainer version of ``caceles-quads-dipep.py``.
 
-Same CACE representation as the old ``fit-dipeptides.py`` (no LES, no learned
-charges), wrapped in a ``LightningTrainingTask`` matching the LES Lightning
-script so the two runs differ only in their output head.
+Same CACE + LES (quadrupoles + polarizabilities) model and same dipeptides
+pre-split data, but driven by ``LightningTrainingTask`` with the single-stage
+schedule used in ``caceles-multipole-2/caceles-bq.py`` (Adam betas default
+(0.9, 0.999), ReduceLROnPlateau, gradient_clip_val=10, checkpoint/restart).
 """
 
 import os
@@ -16,7 +17,9 @@ import lightning as L
 import cace
 from cace.representations import Cace
 from cace.modules import BesselRBF, PolynomialCutoff
+from cace.modules import TensorReadout
 from cace.models.atomistic import NeuralNetworkPotential
+from cace.modules.les_wrapper import LesWrapper
 from cace.tasks import LightningTrainingTask, GetLoss
 from cace.tools import Metrics, torch_geometric
 from cace.data.atomic_data import AtomicData
@@ -111,10 +114,10 @@ data = DipepData(
     atomic_energies=atomic_energies,
 )
 
-logs_name = "cace_sr_dipep"
+logs_name = "caceles_quads_dipep"
 
 # ---------------------------------------------------------------------------
-# Representation — matches old fit-dipeptides.py exactly (no max_l_out)
+# Representation
 # ---------------------------------------------------------------------------
 radial_basis = BesselRBF(cutoff=cutoff, n_rbf=6, trainable=True)
 cutoff_fn = PolynomialCutoff(cutoff=cutoff)
@@ -128,6 +131,7 @@ cace_representation = Cace(
     radial_basis=radial_basis,
     n_radial_basis=12,
     max_l=4,
+    max_l_out=2,
     max_nu=3,
     num_message_passing=1,
     type_message_passing=['M', 'Ar', 'Bchi'],
@@ -136,15 +140,40 @@ cace_representation = Cace(
 )
 
 # ---------------------------------------------------------------------------
-# Output modules — Atomwise + Forces, no LES
+# Output modules
 # ---------------------------------------------------------------------------
-atomwise = cace.modules.Atomwise(
+multipoles = TensorReadout(
+    max_l=2,
+    l0_key='kappas',
+    l1_key='dipoles',
+    l2_key=['alphas', 'quads'],
+    l0_output_scale=0.1,
+    l1_output_scale=1.0,
+    l2_output_scale=1.0,
+)
+
+les_e = LesWrapper(
+    dipole_key='dipoles',
+    quad_key='quads',
+    alpha_key='alphas',
+    energy_key='ewald_potential',
+    compute_bec=False,
+    make_alpha_positive=True,
+    add_scalar_alpha=True,
+)
+
+sr_energy = cace.modules.atomwise.Atomwise(
     n_layers=3,
-    output_key='pred_energy',
+    output_key='SR_energy',
     n_hidden=[32, 16],
-    n_out=1,
     use_batchnorm=False,
     add_linear_nn=True,
+    output_scale=1.0,
+)
+
+e_add = cace.modules.FeatureAdd(
+    feature_keys=['SR_energy', 'ewald_potential'],
+    output_key='pred_energy',
 )
 
 forces = cace.modules.Forces(
@@ -154,7 +183,7 @@ forces = cace.modules.Forces(
 
 model = NeuralNetworkPotential(
     representation=cace_representation,
-    output_modules=[atomwise, forces],
+    output_modules=[multipoles, les_e, sr_energy, e_add, forces],
 )
 
 # ---------------------------------------------------------------------------
@@ -204,5 +233,5 @@ task = LightningTrainingTask(
     scheduler_args={'mode': 'min', 'factor': 0.8, 'patience': 10},
     optimizer_args={'lr': 0.01},
 )
-task.fit(data, dev_run=dev_run, max_epochs=500, chkpt=chkpt,
+task.fit(data, dev_run=dev_run, max_epochs=1000, chkpt=chkpt,
          progress_bar=progress_bar)
