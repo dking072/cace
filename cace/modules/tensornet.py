@@ -24,7 +24,6 @@ class TensorLinearMixing(nn.Module):
             output_tensors[l] = torch.transpose(output_tensor, 1, -1)
         return output_tensors
 
-<<<<<<< HEAD
 class TensorProductLayer(nn.Module):
     def __init__(self, nc,
                  max_x_way      : int=2,
@@ -63,8 +62,6 @@ class TensorProductLayer(nn.Module):
                     output_tensors[z_way] += output_tensor
         return output_tensors
 
-=======
->>>>>>> l2-clean-dipep
 class TensorActivationGate(nn.Module):
     def __init__(self,l_out_list:List[int]) -> None:
         super().__init__()
