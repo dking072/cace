@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, List, Callable, Tuple, Union
 
-from .tensornet_utils import multi_outer_product
-from .tensornet_utils import _aggregate_new, expand_to, find_distances, find_moment, _scatter_add, single_tensor_product, layer_norm, normalize_tensors
+from .tensornet_utils import expand_to
 
 class TensorLinearMixing(nn.Module):
     def __init__(self,
@@ -25,6 +24,7 @@ class TensorLinearMixing(nn.Module):
             output_tensors[l] = torch.transpose(output_tensor, 1, -1)
         return output_tensors
 
+<<<<<<< HEAD
 class TensorProductLayer(nn.Module):
     def __init__(self, nc,
                  max_x_way      : int=2,
@@ -63,6 +63,8 @@ class TensorProductLayer(nn.Module):
                     output_tensors[z_way] += output_tensor
         return output_tensors
 
+=======
+>>>>>>> l2-clean-dipep
 class TensorActivationGate(nn.Module):
     def __init__(self,l_out_list:List[int]) -> None:
         super().__init__()

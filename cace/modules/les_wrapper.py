@@ -15,6 +15,7 @@ class LesWrapper(nn.Module):
                  energy_key: str = 'LES_energy',
                  charge_key: str = 'LES_charge',
                  dipole_key: str = None,
+                 quad_key: str = None,
                  kappa_key: str = None,
                  alpha_key: str = None,
                  atomic_number_key: str = None,
@@ -24,6 +25,7 @@ class LesWrapper(nn.Module):
                  bec_output_index: int = None, # option to compute BEC along one axis
                  make_alpha_positive: bool = False,
                  make_kappa_positive: bool = False,
+                 make_quad_traceless: bool = True,
                  add_scalar_alpha: bool = False,
                  scalar_alpha_mlp_sizes: Sequence[int] = [32, 16],
                  scaling_factor_scalar_alpha: float = 0.001,
@@ -45,15 +47,17 @@ class LesWrapper(nn.Module):
         self.energy_key = energy_key
         self.charge_key = charge_key
         self.dipole_key = dipole_key
+        self.quad_key = quad_key
         self.kappa_key = kappa_key
         self.alpha_key = alpha_key
         self.atomic_number_key = atomic_number_key
 
         self.make_alpha_positive = make_alpha_positive
         self.make_kappa_positive = make_kappa_positive
+        self.make_quad_traceless = make_quad_traceless
         self.add_scalar_alpha = add_scalar_alpha
         self.scaling_factor_scalar_alpha = scaling_factor_scalar_alpha
-        if self.add_scalar_alpha:
+        if alpha_key is not None and self.add_scalar_alpha:
             self.alpha_scalar_mlp = build_mlp(hidden_sizes=scalar_alpha_mlp_sizes)
 
         self.bec_key = bec_key
@@ -98,26 +102,38 @@ class LesWrapper(nn.Module):
 
         if hasattr(self, 'add_scalar_alpha') and self.add_scalar_alpha:
             alpha = data[self.alpha_key] if self.alpha_key in data else None
-            if alpha.dim() == 3 and alpha.shape[1] == 3 and alpha.shape[2] == 3:
+            if alpha is not None and alpha.dim() == 3 and alpha.shape[1] == 3 and alpha.shape[2] == 3:
                 desc = data[self.feature_key]
                 a2 = self.alpha_scalar_mlp(desc.reshape(desc.shape[0],-1)).squeeze() * self.scaling_factor_scalar_alpha
                 eye = torch.eye(3,device=a2.device)
                 a2 = a2[:,None,None] * eye[None,:,:]
                 data[self.alpha_key] = data[self.alpha_key] + a2
 
-        if hasattr(self, 'make_alpha_positive') and self.make_alpha_positive:
+        if self.alpha_key is not None and hasattr(self, 'make_alpha_positive') and self.make_alpha_positive:
             alpha = data[self.alpha_key] if self.alpha_key in data else None
             if alpha.dim() == 2:
                 data[self.alpha_key] = alpha**2
             if alpha.dim() == 3 and alpha.shape[1] == 3 and alpha.shape[2] == 3:
                 data[self.alpha_key] = torch.einsum("nij,nkj->nik",alpha, alpha)
-        if hasattr(self, 'make_kappa_positive') and self.make_kappa_positive:
+        if self.kappa_key is not None and hasattr(self, 'make_kappa_positive') and self.make_kappa_positive:
             data[self.kappa_key] = data[self.kappa_key]**2
+
+        if not hasattr(self, 'quad_key'):
+            self.quad_key = None
+
+        if self.quad_key is not None and hasattr(self, 'make_quad_traceless') and self.make_quad_traceless:
+            quad = data[self.quad_key] if self.quad_key in data else None
+            trace = torch.einsum("nii->n", quad)
+            eye = torch.eye(3, device=quad.device, dtype=quad.dtype)
+            quad = quad - (trace[:,None,None] * eye[None,:,:])/3
+            data[self.quad_key] = quad
+
 
         result = self.les(
             desc=features,
             latent_charges=data[self.charge_key] if features is None else None,
             latent_dipoles=data[self.dipole_key] if self.dipole_key is not None else None,
+            latent_quads=data[self.quad_key] if self.quad_key is not None else None,
             latent_alphas=data[self.alpha_key] if self.alpha_key is not None else None,
             latent_kappas=data[self.kappa_key] if self.kappa_key is not None else None,
             atomic_numbers=data[self.atomic_number_key] if hasattr(self, 'atomic_number_key') and self.atomic_number_key is not None else None,
