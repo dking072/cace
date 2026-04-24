@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, List, Callable, Tuple, Union
 
-from .tensornet_utils import expand_to
+from .tensornet_utils import expand_to, _aggregate_new
 
 class TensorLinearMixing(nn.Module):
     def __init__(self,
